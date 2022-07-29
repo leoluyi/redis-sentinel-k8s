@@ -1,0 +1,101 @@
+apiVersion: /v1
+kind: Service
+metadata:
+name: haproxy-service
+namespace: redis
+spec:
+  type: ClusterIP
+  ports:
+  - name: dashboard
+    port: 8080
+    targetPort: 8080
+  - name: redis-write
+    port: 6379
+    targetPort: 6379
+  - name: redis-read
+    port: 6380
+    targetPort: 6380
+    selector:
+    app: haproxy
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+name: haproxy-config
+namespace: redis
+data:
+haproxy.cfg: |
+  defaults
+  mode tcp
+  timeout connect 3s
+  timeout server 6s
+  timeout client 6s
+  listen stats
+  mode http
+  bind :9000
+  stats enable
+  stats hide-version
+  stats realm Haproxy\ Statistics
+  stats uri /haproxy_stats
+  frontend ft_redis
+  mode tcp
+  bind *:80
+  default_backend bk_redis
+  backend bk_redis
+  mode tcp
+  option tcp-check
+  tcp-check send PING\r\n
+  tcp-check expect string +PONG
+  tcp-check send info\ replication\r\n
+  tcp-check expect string role:master
+  tcp-check send QUIT\r\n
+  tcp-check expect string +OK
+  server redis_backend_01 redis-01:6379 maxconn 1024 check inter 1s
+  server redis_backend_02 redis-02:6379 maxconn 1024 check inter 1s
+  server redis_backend_03 redis-03:6379 maxconn 1024 check inter 1s
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: haproxy-deployment
+namespace: redis
+labels:
+  app: haproxy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+    app: haproxy
+  template:
+  metadata:
+  name: haproxy-pod
+  labels:
+    app: haproxy
+  spec:
+  affinity:
+  podAntiAffinity:
+  requiredDuringSchedulingIgnoredDuringExecution:
+  - labelSelector:
+  matchExpressions:
+  - key: app
+  operator: In
+  values:
+  - haproxy
+  topologyKey: "kubernetes.io/hostname"
+  containers:
+  - name: haproxy
+    image: haproxy:2.3
+    ports:
+    - containerPort: 8080
+    - containerPort: 6379
+    - containerPort: 6380
+    volumeMounts:
+    - name: config
+    mountPath: /usr/local/etc/haproxy/haproxy.cfg
+    subPath: haproxy.cfg
+    readOnly: true
+    restartPolicy: Always
+    volumes:
+    - name: config
+  configMap:
+    name: haproxy-config
